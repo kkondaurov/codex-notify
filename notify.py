@@ -1,9 +1,54 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 from typing import Any
+
+
+def _log(msg: str) -> None:
+    """Emit debug output only when explicitly requested."""
+    if os.environ.get("CODEX_NOTIFY_DEBUG"):
+        print(msg, file=sys.stderr)
+
+
+def _send_notification(title: str, message: str, group: str) -> None:
+    """
+    Try terminal-notifier first; fall back to AppleScript if it exits non-zero
+    (e.g., Notification Center temporarily unavailable).
+    """
+    cmd = [
+        "terminal-notifier",
+        "-title",
+        title,
+        "-message",
+        message,
+        "-group",
+        group,
+        "-ignoreDnD",
+        "-activate",
+        "com.mitchellh.ghostty",
+    ]
+
+    try:
+        # Capture output so we can surface a useful error message on failure.
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return
+    except FileNotFoundError as e:
+        err = f"terminal-notifier not found: {e}"
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or "").strip()
+        err = f"terminal-notifier exited {e.returncode}: {detail}"
+
+    _log(f"failed to send notification via terminal-notifier: {err}")
+
+    # Best-effort fallback using AppleScript; this is less featureful (no group).
+    fallback_script = f'display notification {json.dumps(message)} with title {json.dumps(title)}'
+    try:
+        subprocess.run(["osascript", "-e", fallback_script], check=True)
+    except Exception as fallback_err:
+        _log(f"fallback AppleScript notification failed: {fallback_err}")
 
 
 def _short_text(value: str, max_chars: int) -> str:
@@ -100,29 +145,11 @@ def main() -> int:
                 message = " " + message
             message = message.replace("{", "(").replace("}", ")")
         case _:
-            print(f"not sending a push notification for: {notification_type}")
+            _log(f"not sending a push notification for: {notification_type}")
             return 0
 
     thread_id = str(notification.get("thread-id", ""))
-
-    try:
-        subprocess.check_output(
-            [
-                "terminal-notifier",
-                "-title",
-                title,
-                "-message",
-                message,
-                "-group",
-                "codex-" + thread_id,
-                "-ignoreDnD",
-                "-activate",
-                "com.mitchellh.ghostty",
-            ]
-        )
-    except subprocess.CalledProcessError as e:
-        # Don't crash the caller if notifications fail.
-        print(f"failed to send notification: {e}", file=sys.stderr)
+    _send_notification(title, message, "codex-" + thread_id)
 
     return 0
 
